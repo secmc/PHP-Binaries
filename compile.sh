@@ -311,9 +311,6 @@ if [ $PHP_VERSION_ID -ge 80500 ]; then
   EXT_XDEBUG_VERSION="$EXT_XDEBUG_VERSION_PHP85"
   EXT_IGBINARY_VERSION="$EXT_IGBINARY_VERSION_PHP85"
 fi
-if [ $PHP_VERSION_ID -ge 80400 ]; then
-  HAVE_OPCACHE_JIT="yes"
-fi
 if [ "$HAVE_OPCACHE_JIT" == "yes" ]; then
   if [ $PHP_VERSION_ID -lt 80400 ]; then
     write_out "WARNING" "JIT in versions below PHP 8.4 is highly unstable and not recommended"
