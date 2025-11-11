@@ -1288,11 +1288,9 @@ $HAVE_MYSQLI \
 $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
 
-# Force the grpc extension to use its bundled BoringSSL headers
-# before the system/PHP OpenSSL headers, otherwise we get
-# OPENSSL_PUT_ERROR / ASN1 / etc build failures.
 if [ -f "ext/grpc/Makefile" ] && [ -d "ext/grpc/third_party/boringssl-with-bazel/src/include" ]; then
-  sed -i 's|^AM_CPPFLAGS =|AM_CPPFLAGS = -I$(srcdir)/third_party/boringssl-with-bazel/src/include |' ext/grpc/Makefile
+  sed -i 's|^INCLUDES[ \t]*=|INCLUDES = -I$(srcdir)/third_party/boringssl-with-bazel/src/include |' ext/grpc/Makefile
+  sed -i "s|-I$INSTALL_DIR/include||g" ext/grpc/Makefile
   sed -i "s|-I$INSTALL_DIR/include||g" ext/grpc/Makefile
 fi
 
