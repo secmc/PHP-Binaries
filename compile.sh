@@ -27,7 +27,6 @@ LIBDEFLATE_VERSION="96836d7d9d10e3e0d53e6edb54eb908514e336c4" #1.24 - see above 
 EXT_PMMPTHREAD_VERSION="6.2.0"
 EXT_YAML_VERSION="2.2.5"
 EXT_LEVELDB_VERSION="88071eb1b1eae96af043229104b9d813f7cbe40c" #release not tagged
-EXT_CHUNKUTILS2_VERSION="0.4.0"
 EXT_XDEBUG_VERSION="3.4.7"
 EXT_IGBINARY_VERSION="3.2.16"
 EXT_CRYPTO_VERSION="999b3c7edbc7f8ca4fdeb0bb4bbae488ad0daf07" #release not tagged
@@ -1140,8 +1139,6 @@ write_done
 
 get_github_extension "leveldb" "$EXT_LEVELDB_VERSION" "pmmp" "php-leveldb"
 
-get_github_extension "chunkutils2" "$EXT_CHUNKUTILS2_VERSION" "pmmp" "ext-chunkutils2"
-
 get_github_extension "libdeflate" "$EXT_LIBDEFLATE_VERSION" "pmmp" "ext-libdeflate"
 
 get_github_extension "morton" "$EXT_MORTON_VERSION" "pmmp" "ext-morton"
@@ -1246,7 +1243,6 @@ $HAS_GD \
 --with-leveldb="$INSTALL_DIR" \
 --without-readline \
 $HAS_DEBUG \
---enable-chunkutils2 \
 --enable-morton \
 --enable-mbstring \
 --disable-mbregex \
