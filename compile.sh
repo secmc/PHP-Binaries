@@ -4,7 +4,7 @@ PHP_VERSIONS=("8.1.33" "8.2.29" "8.3.27" "8.4.14" "8.5.0RC3")
 #### NOTE: Tags with "v" prefixes behave weirdly in the GitHub API. They'll be stripped in some places but not others.
 #### Use commit hashes to avoid this.
 
-EXT_GRPC_VERSION="1.74.0"
+EXT_GRPC_VERSION="1.76.0"
 
 ZLIB_VERSION="1.3.1"
 GMP_VERSION="6.3.0"
@@ -1287,6 +1287,14 @@ $HAVE_MYSQLI \
 --enable-grpc \
 $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
+
+# Force the grpc extension to use its bundled BoringSSL headers
+# before the system/PHP OpenSSL headers, otherwise we get
+# OPENSSL_PUT_ERROR / ASN1 / etc build failures.
+if [ -f "ext/grpc/Makefile" ] && [ -d "ext/grpc/third_party/boringssl-with-bazel/src/include" ]; then
+  sed -i 's|^AM_CPPFLAGS = |AM_CPPFLAGS = -I$(srcdir)/third_party/boringssl-with-bazel/src/include |' ext/grpc/Makefile
+fi
+
 write_compile
 if [ "$COMPILE_FOR_ANDROID" == "yes" ]; then
 	sed -i=".backup" 's/-export-dynamic/-all-static/g' Makefile
