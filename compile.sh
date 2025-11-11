@@ -4,6 +4,7 @@ PHP_VERSIONS=("8.1.33" "8.2.29" "8.3.27" "8.4.14" "8.5.0RC3")
 #### NOTE: Tags with "v" prefixes behave weirdly in the GitHub API. They'll be stripped in some places but not others.
 #### Use commit hashes to avoid this.
 
+EXT_GRPC_VERSION="1.76.0"
 
 ZLIB_VERSION="1.3.1"
 GMP_VERSION="6.3.0"
@@ -1128,6 +1129,8 @@ get_github_extension "yaml" "$EXT_YAML_VERSION" "php" "pecl-file_formats-yaml"
 
 get_github_extension "igbinary" "$EXT_IGBINARY_VERSION" "igbinary" "igbinary"
 
+get_pecl_extension "grpc" "$EXT_GRPC_VERSION"
+
 get_github_extension "recursionguard" "$EXT_RECURSIONGUARD_VERSION" "pmmp" "ext-recursionguard"
 
 echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
@@ -1288,6 +1291,7 @@ $HAVE_MYSQLI \
 --enable-xxhash \
 --enable-arraydebug \
 --enable-encoding \
+--enable-grpc \
 $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
 write_compile

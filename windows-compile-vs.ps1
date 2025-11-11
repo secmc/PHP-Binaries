@@ -9,6 +9,8 @@ $ARCH="x64"
 #### NOTE: Tags with "v" prefixes behave weirdly in the GitHub API. They'll be stripped in some places but not others.
 #### Use commit hashes to avoid this.
 
+$PHP_GRPC_VER="1.76.0"
+
 $LIBYAML_VER="0.2.5"
 $PTHREAD_W32_VER="3.0.0"
 $LEVELDB_MCPE_VER="1c7564468b41610da4f498430e795ca4de0931ff" #release not tagged
@@ -100,7 +102,7 @@ date >> "$log_file"
 
 pm-echo "Checking dependencies"
 
-$script_dependencies = @("git", "cmake")
+$script_dependencies = @("git", "cmake", "tar")
 foreach ($dep in $script_dependencies) {
     $depInfo = Get-Command "$dep" -ErrorAction SilentlyContinue
     if ($depInfo -eq $null) {
@@ -109,7 +111,6 @@ foreach ($dep in $script_dependencies) {
         pm-echo "Found $dep in $($depInfo.Source)"
     }
 }
-
 
 
 pm-echo "Checking configuration options"
@@ -467,6 +468,24 @@ function get-github-extension {
     get-extension-zip $name $version "https://github.com/$user/$repo/archive/$versionPrefix$version.zip" "$repo-$version"
 }
 
+function get-pecl-extension {
+    param ([string] $name, [string] $version)
+
+    write-library "php-ext $name" $version
+    write-download
+    $file = download-file "https://pecl.php.net/get/$name-$version.tgz" "php-ext-$name"
+    write-extracting
+
+    # extract into current directory (we call from ext/)
+    (& tar -xzf $file -C $pwd) >> $log_file 2>&1
+
+    # normalize folder name to ext\<name>
+    if (Test-Path "$pwd\$name") { Remove-Item -Recurse -Force "$pwd\$name" }
+    Move-Item "$pwd\$name-$version" "$pwd\$name" -Force
+
+    write-done
+}
+
 function download-php-extensions {
     Push-Location "$SOURCES_PATH\ext" >> $log_file 2>&1
     get-github-extension "pmmpthread" $PHP_PMMPTHREAD_VER "pmmp" "ext-pmmpthread"
@@ -481,6 +500,7 @@ function download-php-extensions {
     get-github-extension "xdebug"                $PHP_XDEBUG_VER                "xdebug"   "xdebug"
     get-github-extension "arraydebug"            $PHP_ARRAYDEBUG_VER            "pmmp"     "ext-arraydebug"
     get-github-extension "encoding"              $PHP_ENCODING_VER              "pmmp"     "ext-encoding"
+    get-pecl-extension "grpc" $PHP_GRPC_VER
 
     write-library "php-ext crypto" $PHP_CRYPTO_VER
     write-download
@@ -560,6 +580,7 @@ sdk-command "configure^`
     --enable-xxhash^`
     --enable-zip^`
     --enable-zlib^`
+    --enable-grpc=shared^`
     --with-bz2=shared^`
     --with-crypto=shared^`
     --with-curl^`
@@ -629,6 +650,7 @@ append-file-utf8 "extension=php_chunkutils2.dll" $php_ini
 append-file-utf8 "extension=php_igbinary.dll" $php_ini
 append-file-utf8 "extension=php_leveldb.dll" $php_ini
 append-file-utf8 "extension=php_crypto.dll" $php_ini
+append-file-utf8 "extension=php_grpc.dll" $php_ini
 append-file-utf8 "extension=php_libdeflate.dll" $php_ini
 append-file-utf8 "extension=php_encoding.dll" $php_ini
 append-file-utf8 "igbinary.compact_strings=0" $php_ini
