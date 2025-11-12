@@ -422,14 +422,17 @@ else
 	elif [[ "$COMPILE_TARGET" == "mac-x86-64" ]]; then
 		[ -z "$march" ] && march=core2;
 		[ -z "$mtune" ] && mtune=generic;
-		[ -z "$MACOSX_DEPLOYMENT_TARGET" ] && export MACOSX_DEPLOYMENT_TARGET=10.9;
+		# v11 fix: raise min version and apply to C and C++
+		[ -z "$MACOSX_DEPLOYMENT_TARGET" ] && export MACOSX_DEPLOYMENT_TARGET=11.0;
 		CFLAGS="$CFLAGS -m64 -arch x86_64 -fomit-frame-pointer -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+		CXXFLAGS="$CXXFLAGS -m64 -arch x86_64 -fomit-frame-pointer -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
 		LDFLAGS="$LDFLAGS -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
 		if [ "$DO_STATIC" == "no" ]; then
 			LDFLAGS="$LDFLAGS -Wl,-rpath,@loader_path/../lib";
 			export DYLD_LIBRARY_PATH="@loader_path/../lib"
 		fi
 		CFLAGS="$CFLAGS -Qunused-arguments"
+		CXXFLAGS="$CXXFLAGS -Qunused-arguments"
 		GMP_ABI="64"
 		OPENSSL_TARGET="darwin64-x86_64-cc"
 		CMAKE_GLOBAL_EXTRA_FLAGS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
@@ -438,12 +441,14 @@ else
 	elif [[ "$COMPILE_TARGET" == "mac-arm64" ]]; then
 		[ -z "$MACOSX_DEPLOYMENT_TARGET" ] && export MACOSX_DEPLOYMENT_TARGET=11.0;
 		CFLAGS="$CFLAGS -arch arm64 -fomit-frame-pointer -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+		CXXFLAGS="$CXXFLAGS -arch arm64 -fomit-frame-pointer -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
 		LDFLAGS="$LDFLAGS -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
 		if [ "$DO_STATIC" == "no" ]; then
 			LDFLAGS="$LDFLAGS -Wl,-rpath,@loader_path/../lib";
 			export DYLD_LIBRARY_PATH="@loader_path/../lib"
 		fi
 		CFLAGS="$CFLAGS -Qunused-arguments"
+		CXXFLAGS="$CXXFLAGS -Qunused-arguments"
 		GMP_ABI="64"
 		OPENSSL_TARGET="darwin64-arm64-cc"
 		CMAKE_GLOBAL_EXTRA_FLAGS="-DCMAKE_OSX_ARCHITECTURES=arm64"
@@ -1232,10 +1237,10 @@ if [ "$FSANITIZE_OPTIONS" != "" ]; then
 	LDFLAGS="-fsanitize=$FSANITIZE_OPTIONS $LDFLAGS"
 fi
 
-unset CPPFLAGS CFLAGS CXXFLAGS
-export CFLAGS="-O2"
+# v11 fix: keep existing flags (with -mmacosx-version-min) — do NOT unset here
 
 RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLAGS="$LDFLAGS $FLAGS_LTO" ./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
+   --exec-prefix="$INSTALL_DIR" \
 --exec-prefix="$INSTALL_DIR" \
 --with-curl \
 --with-zlib \
@@ -1273,8 +1278,8 @@ $HAS_DEBUG \
 --enable-phar \
 --enable-ctype \
 --enable-sockets \
---enable-shared=no \
---enable-static=yes \
+--enable-shared=yes \
+--enable-static=no \
 --enable-shmop \
 --enable-zts \
 --disable-short-tags \
@@ -1302,15 +1307,16 @@ else
   SED_INPLACE=(sed -i);
 fi
 
-if [ -f "ext/grpc/Makefile" ] && [ -d "ext/grpc/third_party/boringssl-with-bazel/src/include" ]; then
-  "${SED_INPLACE[@]}" -E \
-    's|^(INCLUDES[[:space:]]*=)|\1 -I$(srcdir)/third_party/boringssl-with-bazel/src/include|' \
-    ext/grpc/Makefile
-  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include(/openssl)?||g" ext/grpc/Makefile
+# Strip any OpenSSL link flags sneaking into gRPC
+if [ -f "ext/grpc/Makefile" ]; then
+  "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile
 fi
-# If some PHP versions generate Makefile.objects too, scrub it as well (harmless if absent)
 if [ -f "ext/grpc/Makefile.objects" ]; then
-  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include(/openssl)?||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile.objects
 fi
 
 write_compile
