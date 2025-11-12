@@ -134,11 +134,11 @@ fi
 #	export AS="llvm-as"
 #	export RANLIB=llvm-ranlib
 #else
-	export CC="gcc"
-	export CXX="g++"
-	#export AR="gcc-ar"
-	export RANLIB=ranlib
-	export STRIP="strip"
+export CC="gcc"
+export CXX="g++"
+#export AR="gcc-ar"
+export RANLIB=ranlib
+export STRIP="strip"
 #fi
 
 COMPILE_FOR_ANDROID=no
@@ -327,7 +327,7 @@ if [ $? -eq 0 ]; then
 	wget_flags=""
 	if [ "$DOWNLOAD_INSECURE" == "yes" ]; then
 		wget_flags="--no-check-certificate"
-	fi
+	fi>
 	alias _download_file="wget $wget_flags -nv -O -"
 else
 	type curl >> "$DIR/install.log" 2>&1
@@ -399,7 +399,7 @@ if [ "$IS_CROSSCOMPILE" == "yes" ]; then
 		export ac_cv_func_fnmatch_works=yes #musl should be OK
 
 		write_out "INFO" "Cross-compiling for Android ARMv8 (aarch64)"
-	#TODO: add cross-compile for aarch64 platforms (ios, rpi)
+		#TODO: add cross-compile for aarch64 platforms (ios, rpi)
 	else
 		write_error "Please supply a proper platform [android-aarch64] to cross-compile"
 		exit 1
@@ -437,7 +437,7 @@ else
 		OPENSSL_TARGET="darwin64-x86_64-cc"
 		CMAKE_GLOBAL_EXTRA_FLAGS="-DCMAKE_OSX_ARCHITECTURES=x86_64"
 		write_out "INFO" "Compiling for MacOS x86_64"
-	#TODO: add aarch64 platforms (ios, android, rpi)
+		#TODO: add aarch64 platforms (ios, android, rpi)
 	elif [[ "$COMPILE_TARGET" == "mac-arm64" ]]; then
 		[ -z "$MACOSX_DEPLOYMENT_TARGET" ] && export MACOSX_DEPLOYMENT_TARGET=11.0;
 		CFLAGS="$CFLAGS -arch arm64 -fomit-frame-pointer -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
@@ -568,11 +568,7 @@ export CXXFLAGS="$CFLAGS $CXXFLAGS"
 export LDFLAGS="$LDFLAGS"
 export CPPFLAGS="$CPPFLAGS"
 export LIBRARY_PATH="$INSTALL_DIR/lib:$LIBRARY_PATH"
-export PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig"
-
-#some stuff (like curl) makes assumptions about library paths that break due to different behaviour in pkgconf vs pkg-config
-export PKG_CONFIG_ALLOW_SYSTEM_LIBS="yes"
-export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS="yes"
+export PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig"   # (we'll extend this after we set OPENSSL_PREFIX)
 
 rm -r -f "$BASE_BUILD_DIR" >> "$DIR/install.log" 2>&1
 rm -r -f bin/ >> "$DIR/install.log" 2>&1
@@ -583,9 +579,11 @@ mkdir -m 0755 -p "$LIB_BUILD_DIR" >> "$DIR/install.log" 2>&1
 cd "$BUILD_DIR"
 set -e
 
-# ---- Minimal change #1: make PHP's --with-openssl prefix match where we install OpenSSL
-OPENSSL_PREFIX="$INSTALL_DIR"
+# ==== CHANGE A: Isolate OpenSSL headers to their own prefix ====
+OPENSSL_PREFIX="$INSTALL_DIR/openssl"
 mkdir -p "$OPENSSL_PREFIX"
+# Also let pkg-config see OpenSSL's .pc if any, and make it resolve to our runtime lib dir:
+export PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig"
 
 #PHP
 write_library "PHP" "$PHP_VERSION"
@@ -689,9 +687,10 @@ function build_openssl {
 
 		write_configure
 		cd "$openssl_dir"
+		# ==== CHANGE A (continued): headers under $OPENSSL_PREFIX, libs under $INSTALL_DIR/lib ====
 		RANLIB=$RANLIB $OPENSSL_CMD \
-		--prefix="$INSTALL_DIR" \
-		--openssldir="$INSTALL_DIR" \
+		--prefix="$OPENSSL_PREFIX" \
+		--openssldir="$OPENSSL_PREFIX" \
 		--libdir="$INSTALL_DIR/lib" \
 		no-asm \
 		no-hw \
@@ -706,6 +705,8 @@ function build_openssl {
 	fi
 	write_install
 	make install_sw >> "$DIR/install.log" 2>&1
+	# Keep pkg-config -L happy if it points to $OPENSSL_PREFIX/lib:
+	ln -s "$INSTALL_DIR/lib" "$OPENSSL_PREFIX/lib" >> "$DIR/install.log" 2>&1 || true
 	cd ..
 	write_done
 }
@@ -729,7 +730,8 @@ function build_curl {
 			sed -i'.bak' 's/^CURL_CONVERT_INCLUDE_TO_ISYSTEM//' ./configure.ac
 		fi
 		./buildconf --force >> "$DIR/install.log" 2>&1
-		RANLIB=$RANLIB ./configure --disable-dependency-tracking \
+		# ==== CHANGE B: point curl at isolated OpenSSL headers & runtime lib dir
+		RANLIB=$RANLIB LDFLAGS="$LDFLAGS -L${INSTALL_DIR}/lib" CPPFLAGS="$CPPFLAGS -I${OPENSSL_PREFIX}/include" ./configure --disable-dependency-tracking \
 		--enable-ipv6 \
 		--enable-optimize \
 		--enable-http \
@@ -753,7 +755,7 @@ function build_curl {
 		--without-zstd \
 		--without-libpsl \
 		--with-zlib="$INSTALL_DIR" \
-		--with-ssl="$INSTALL_DIR" \
+		--with-ssl="$OPENSSL_PREFIX" \
 		--enable-threaded-resolver \
 		--prefix="$INSTALL_DIR" \
 		$EXTRA_FLAGS \
@@ -973,9 +975,9 @@ function build_libzip {
 		write_configure
 		cd "$libzip_dir"
 
-		#we're using OpenSSL for crypto
+		# ==== CHANGE B: make libzip find isolated OpenSSL headers, but link to runtime libs in $INSTALL_DIR/lib
 		cmake . \
-			-DCMAKE_PREFIX_PATH="$INSTALL_DIR" \
+			-DCMAKE_PREFIX_PATH="$INSTALL_DIR;$OPENSSL_PREFIX" \
 			-DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
 			-DCMAKE_INSTALL_LIBDIR=lib \
 			$CMAKE_LIBZIP_EXTRA_FLAGS \
@@ -990,7 +992,9 @@ function build_libzip {
 			-DENABLE_MBEDTLS=OFF \
 			-DENABLE_LZMA=OFF \
 			-DBUILD_OSSFUZZ=OFF \
-			-DENABLE_ZSTD=OFF >> "$DIR/install.log" 2>&1
+			-DENABLE_ZSTD=OFF \
+			-DOPENSSL_ROOT_DIR="$OPENSSL_PREFIX" \
+			-DOPENSSL_USE_STATIC_LIBS=OFF >> "$DIR/install.log" 2>&1
 		write_compile
 		make -j $THREADS >> "$DIR/install.log" 2>&1 && mark_cache
 	else
@@ -1127,15 +1131,9 @@ cd "$BUILD_DIR/php"
 write_out "PHP" "Downloading additional extensions..."
 
 get_github_extension "pmmpthread" "$EXT_PMMPTHREAD_VERSION" "pmmp" "ext-pmmpthread"
-
-
 get_github_extension "yaml" "$EXT_YAML_VERSION" "php" "pecl-file_formats-yaml"
-#get_pecl_extension "yaml" "$EXT_YAML_VERSION"
-
 get_github_extension "igbinary" "$EXT_IGBINARY_VERSION" "igbinary" "igbinary"
-
 get_pecl_extension "grpc" "$EXT_GRPC_VERSION"
-
 get_github_extension "recursionguard" "$EXT_RECURSIONGUARD_VERSION" "pmmp" "ext-recursionguard"
 
 echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
@@ -1147,15 +1145,10 @@ cd "$BUILD_DIR"
 write_done
 
 get_github_extension "leveldb" "$EXT_LEVELDB_VERSION" "pmmp" "php-leveldb"
-
 get_github_extension "libdeflate" "$EXT_LIBDEFLATE_VERSION" "pmmp" "ext-libdeflate"
-
 get_github_extension "morton" "$EXT_MORTON_VERSION" "pmmp" "ext-morton"
-
 get_github_extension "xxhash" "$EXT_XXHASH_VERSION" "pmmp" "ext-xxhash"
-
 get_github_extension "arraydebug" "$EXT_ARRAYDEBUG_VERSION" "pmmp" "ext-arraydebug"
-
 get_github_extension "encoding" "$EXT_ENCODING_VERSION" "pmmp" "ext-encoding"
 
 write_library "PHP" "$PHP_VERSION"
@@ -1174,8 +1167,6 @@ if [ "$DO_STATIC" == "yes" ]; then
 		PKG_CONFIG="$(which pkg-config)" || true
 	fi
 	if [ ! -z "$PKG_CONFIG" ]; then
-		#only export this if pkg-config exists, otherwise leave it (it'll fall back to curl-config)
-
 		echo '#!/bin/sh' > "$BUILD_DIR/pkg-config-wrapper"
 		echo 'exec '$PKG_CONFIG' "$@" --static' >> "$BUILD_DIR/pkg-config-wrapper"
 		chmod +x "$BUILD_DIR/pkg-config-wrapper"
@@ -1300,7 +1291,7 @@ $HAVE_MYSQLI \
 $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
 
-# ---- Minimal change #2: Make the gRPC Makefile prefer vendored BoringSSL, not our OpenSSL headers (portable sed)
+# ==== CHANGE C: Make gRPC ignore our OpenSSL libs and headers completely
 if [[ "$(uname -s)" == "Darwin" ]]; then
   SED_INPLACE=(sed -i '');
 else
@@ -1309,14 +1300,19 @@ fi
 
 # Strip any OpenSSL link flags sneaking into gRPC
 if [ -f "ext/grpc/Makefile" ]; then
+  # strip link-time OpenSSL, and any include dirs pointing at our OpenSSL headers
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile
   "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include/?||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-I$OPENSSL_PREFIX/include/?||g" ext/grpc/Makefile
 fi
 if [ -f "ext/grpc/Makefile.objects" ]; then
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include/?||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E "s|-I$OPENSSL_PREFIX/include/?||g" ext/grpc/Makefile.objects
 fi
 
 write_compile
@@ -1387,7 +1383,7 @@ echo "display_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "display_startup_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "recursionguard.enabled=0 ;disabled due to minor performance impact, only enable this if you need it for debugging" >> "$INSTALL_DIR/bin/php.ini"
 
-# ---- Minimal change #3: load shared modules we built
+# Load shared modules we built
 echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"
 echo "extension=grpc.so"    >> "$INSTALL_DIR/bin/php.ini"
 
@@ -1445,7 +1441,6 @@ if [[ "$HAVE_XDEBUG" == "yes" ]]; then
 	write_out INFO "Xdebug is included, but disabled by default. To enable it, change 'xdebug.mode' in your php.ini file."
 fi
 
-
 cd "$DIR"
 if [ "$DO_CLEANUP" == "yes" ]; then
 	write_out "INFO" "Cleaning up"
@@ -1460,7 +1455,6 @@ if [ "$DO_CLEANUP" == "yes" ]; then
 	rm -r -f "$INSTALL_DIR/misc" >> "$DIR/install.log" 2>&1
 	rm -r -f "$INSTALL_DIR/lib/"*.a >> "$DIR/install.log" 2>&1
 	rm -r -f "$INSTALL_DIR/lib/"*.la >> "$DIR/install.log" 2>&1
-	# keep headers; not necessary to remove for grpc/openssl to work
 fi
 
 if [ "$SEPARATE_SYMBOLS" != "no" ]; then
@@ -1470,10 +1464,10 @@ if [ "$SEPARATE_SYMBOLS" != "no" ]; then
 	cp -r "$INSTALL_DIR"/* "$SYMBOLS_DIR"
 	cd "$INSTALL_DIR"
 	find "lib" \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dylib.*' \) -print0 | while IFS= read -r -d '' file; do
-		"$STRIP" -S "$file" >> "$DIR/install.log" 2>&1 || true #if this fails, this probably isn't an executable binary
+		"$STRIP" -S "$file" >> "$DIR/install.log" 2>&1 || true
 	done
 	for file in "bin/"*; do
-		"$STRIP" -S "$file" >> "$DIR/install.log" 2>&1 || true #if this fails, this probably isn't an executable binary
+		"$STRIP" -S "$file" >> "$DIR/install.log" 2>&1 || true
 	done
 	cd "$DIR"
 	write_done
