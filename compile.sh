@@ -578,6 +578,10 @@ mkdir -m 0755 -p "$LIB_BUILD_DIR" >> "$DIR/install.log" 2>&1
 cd "$BUILD_DIR"
 set -e
 
+# ---- Minimal change #1: make PHP's --with-openssl prefix match where we install OpenSSL
+OPENSSL_PREFIX="$INSTALL_DIR"
+mkdir -p "$OPENSSL_PREFIX"
+
 #PHP
 write_library "PHP" "$PHP_VERSION"
 write_download
@@ -1228,6 +1232,9 @@ if [ "$FSANITIZE_OPTIONS" != "" ]; then
 	LDFLAGS="-fsanitize=$FSANITIZE_OPTIONS $LDFLAGS"
 fi
 
+unset CPPFLAGS CFLAGS CXXFLAGS
+export CFLAGS="-O2"
+
 RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLAGS="$LDFLAGS $FLAGS_LTO" ./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
 --exec-prefix="$INSTALL_DIR" \
 --with-curl \
@@ -1235,7 +1242,7 @@ RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLA
 --with-zlib \
 --with-gmp \
 --with-yaml \
---with-openssl \
+--with-openssl=shared,${OPENSSL_PREFIX} \
 --with-zip \
 --with-libdeflate \
 $HAS_LIBJPEG \
@@ -1284,14 +1291,26 @@ $HAVE_MYSQLI \
 --enable-xxhash \
 --enable-arraydebug \
 --enable-encoding \
---enable-grpc \
+--enable-grpc=shared \
 $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
 
+# ---- Minimal change #2: Make the gRPC Makefile prefer vendored BoringSSL, not our OpenSSL headers (portable sed)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  SED_INPLACE=(sed -i '');
+else
+  SED_INPLACE=(sed -i);
+fi
+
 if [ -f "ext/grpc/Makefile" ] && [ -d "ext/grpc/third_party/boringssl-with-bazel/src/include" ]; then
-  sed -i 's|^INCLUDES[ \t]*=|INCLUDES = -I$(srcdir)/third_party/boringssl-with-bazel/src/include |' ext/grpc/Makefile
-  sed -i "s|-I$INSTALL_DIR/include||g" ext/grpc/Makefile
-  sed -i "s|-I$INSTALL_DIR/include||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E \
+    's|^(INCLUDES[[:space:]]*=)|\1 -I$(srcdir)/third_party/boringssl-with-bazel/src/include|' \
+    ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include(/openssl)?||g" ext/grpc/Makefile
+fi
+# If some PHP versions generate Makefile.objects too, scrub it as well (harmless if absent)
+if [ -f "ext/grpc/Makefile.objects" ]; then
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include(/openssl)?||g" ext/grpc/Makefile.objects
 fi
 
 write_compile
@@ -1362,6 +1381,10 @@ echo "display_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "display_startup_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "recursionguard.enabled=0 ;disabled due to minor performance impact, only enable this if you need it for debugging" >> "$INSTALL_DIR/bin/php.ini"
 
+# ---- Minimal change #3: load shared modules we built
+echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"
+echo "extension=grpc.so"    >> "$INSTALL_DIR/bin/php.ini"
+
 if [ "$HAVE_OPCACHE" == "yes" ]; then
 	if [ "$PHP_VERSION_ID" -lt 80500 ]; then
 		echo "zend_extension=opcache.so" >> "$INSTALL_DIR/bin/php.ini"
@@ -1431,7 +1454,7 @@ if [ "$DO_CLEANUP" == "yes" ]; then
 	rm -r -f "$INSTALL_DIR/misc" >> "$DIR/install.log" 2>&1
 	rm -r -f "$INSTALL_DIR/lib/"*.a >> "$DIR/install.log" 2>&1
 	rm -r -f "$INSTALL_DIR/lib/"*.la >> "$DIR/install.log" 2>&1
-	rm -r -f "$INSTALL_DIR/include" >> "$DIR/install.log" 2>&1
+	# keep headers; not necessary to remove for grpc/openssl to work
 fi
 
 if [ "$SEPARATE_SYMBOLS" != "no" ]; then
