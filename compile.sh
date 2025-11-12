@@ -1621,6 +1621,10 @@ fi
 
 write_done
 
+# Ensure CLI finds php.ini by default (PHP expects it under $prefix/lib/php.ini)
+mkdir -p "$INSTALL_DIR/lib" >> "$DIR/install.log" 2>&1
+cp -f "$INSTALL_DIR/bin/php.ini" "$INSTALL_DIR/lib/php.ini" >> "$DIR/install.log" 2>&1
+
 if [[ "$HAVE_XDEBUG" == "yes" ]]; then
 	get_github_extension "xdebug" "$EXT_XDEBUG_VERSION" "xdebug" "xdebug"
 	write_library "xdebug" "$EXT_XDEBUG_VERSION"
