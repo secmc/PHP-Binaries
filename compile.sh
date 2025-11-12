@@ -1080,8 +1080,8 @@ cd "$LIB_BUILD_DIR"
 
 build_zlib
 build_gmp
-build_openssl
-build_curl
+# build_openssl  # Temporarily disabled
+# build_curl     # Depends on OpenSSL - temporarily disabled
 build_yaml
 build_leveldb
 if [ "$COMPILE_GD" == "yes" ]; then
@@ -1095,7 +1095,7 @@ else
 fi
 
 build_libxml2
-build_libzip
+# build_libzip  # Depends on OpenSSL - temporarily disabled
 build_sqlite3
 build_libdeflate
 
@@ -1136,13 +1136,13 @@ get_github_extension "igbinary" "$EXT_IGBINARY_VERSION" "igbinary" "igbinary"
 get_pecl_extension "grpc" "$EXT_GRPC_VERSION"
 get_github_extension "recursionguard" "$EXT_RECURSIONGUARD_VERSION" "pmmp" "ext-recursionguard"
 
-echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
-git clone https://github.com/bukka/php-crypto.git "$BUILD_DIR/php/ext/crypto" >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR/php/ext/crypto"
-git checkout "$EXT_CRYPTO_VERSION" >> "$DIR/install.log" 2>&1
-git submodule update --init --recursive >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR"
-write_done
+# echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
+# git clone https://github.com/bukka/php-crypto.git "$BUILD_DIR/php/ext/crypto" >> "$DIR/install.log" 2>&1
+# cd "$BUILD_DIR/php/ext/crypto"
+# git checkout "$EXT_CRYPTO_VERSION" >> "$DIR/install.log" 2>&1
+# git submodule update --init --recursive >> "$DIR/install.log" 2>&1
+# cd "$BUILD_DIR"
+# write_done
 
 get_github_extension "leveldb" "$EXT_LEVELDB_VERSION" "pmmp" "php-leveldb"
 get_github_extension "libdeflate" "$EXT_LIBDEFLATE_VERSION" "pmmp" "ext-libdeflate"
@@ -1154,7 +1154,7 @@ get_github_extension "encoding" "$EXT_ENCODING_VERSION" "pmmp" "ext-encoding"
 write_library "PHP" "$PHP_VERSION"
 
 write_configure
-cd php
+# Already in $BUILD_DIR/php from line 1130, no need to cd again
 rm -f ./aclocal.m4 >> "$DIR/install.log" 2>&1
 rm -rf ./autom4te.cache/ >> "$DIR/install.log" 2>&1
 rm -f ./configure >> "$DIR/install.log" 2>&1
@@ -1230,16 +1230,17 @@ fi
 
 # v11 fix: keep existing flags (with -mmacosx-version-min) — do NOT unset here
 
-RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLAGS="$LDFLAGS $FLAGS_LTO" ./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
+# Fix for newer clang: use gnu11 instead of c11 to allow asm keyword and other GNU extensions
+RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO -std=gnu11" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLAGS="$LDFLAGS $FLAGS_LTO" ./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
    --exec-prefix="$INSTALL_DIR" \
 --exec-prefix="$INSTALL_DIR" \
---with-curl \
+--without-curl \
 --with-zlib \
 --with-zlib \
 --with-gmp \
 --with-yaml \
---with-openssl=shared,${OPENSSL_PREFIX} \
---with-zip \
+--without-openssl \
+--without-zip \
 --with-libdeflate \
 $HAS_LIBJPEG \
 $HAS_GD \
@@ -1282,7 +1283,6 @@ $HAVE_MYSQLI \
 --enable-opcache=$HAVE_OPCACHE \
 --enable-opcache-jit=$HAVE_OPCACHE_JIT \
 --enable-igbinary \
---with-crypto \
 --enable-recursionguard \
 --enable-xxhash \
 --enable-arraydebug \
@@ -1292,10 +1292,25 @@ $HAVE_VALGRIND \
 $CONFIGURE_FLAGS >> "$DIR/install.log" 2>&1
 
 # ==== CHANGE C: Make gRPC ignore our OpenSSL libs and headers completely
+# (gRPC uses its own bundled BoringSSL, not our OpenSSL build)
 if [[ "$(uname -s)" == "Darwin" ]]; then
   SED_INPLACE=(sed -i '');
 else
   SED_INPLACE=(sed -i);
+fi
+
+# Force GNU C standard for PHP core build (clang 16+ needs asm under gnu11)
+if [ -f "Makefile" ]; then
+  "${SED_INPLACE[@]}" 's/-std=c11/-std=gnu11/g' Makefile
+fi
+if [ -f "Makefile.global" ]; then
+  "${SED_INPLACE[@]}" 's/-std=c11/-std=gnu11/g' Makefile.global
+fi
+if [ -f "main/Makefile" ]; then
+  "${SED_INPLACE[@]}" 's/-std=c11/-std=gnu11/g' main/Makefile
+fi
+if [ -f "TSRM/Makefile" ]; then
+  "${SED_INPLACE[@]}" 's/-std=c11/-std=gnu11/g' TSRM/Makefile
 fi
 
 # Strip any OpenSSL link flags sneaking into gRPC
@@ -1313,6 +1328,33 @@ if [ -f "ext/grpc/Makefile.objects" ]; then
   "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include/?||g" ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E "s|-I$OPENSSL_PREFIX/include/?||g" ext/grpc/Makefile.objects
+fi
+
+# Hard-block OpenSSL headers for gRPC (use only bundled BoringSSL)
+if [ -f "ext/grpc/Makefile" ]; then
+  OPENSSL_INC="$OPENSSL_PREFIX/include"
+  {
+    echo ""
+    echo "# Drop OpenSSL headers for gRPC to avoid conflicts with BoringSSL"
+    echo "INCLUDES := \$(filter-out -I$OPENSSL_INC,\$(INCLUDES))"
+    echo "CPPFLAGS := \$(filter-out -I$OPENSSL_INC,\$(CPPFLAGS))"
+    echo "CFLAGS := \$(filter-out -I$OPENSSL_INC,\$(CFLAGS))"
+    echo "CXXFLAGS := \$(filter-out -I$OPENSSL_INC,\$(CXXFLAGS))"
+  } >> ext/grpc/Makefile
+fi
+
+# Also strip hardcoded OpenSSL paths from compile rules
+if [ -f "ext/grpc/Makefile" ]; then
+  "${SED_INPLACE[@]}" "s|-I${OPENSSL_PREFIX}/include||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" "s|-I${INSTALL_DIR}/include||g" ext/grpc/Makefile
+fi
+if [ -f "ext/grpc/Makefile.objects" ]; then
+  "${SED_INPLACE[@]}" "s|-I${OPENSSL_PREFIX}/include||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" "s|-I${INSTALL_DIR}/include||g" ext/grpc/Makefile.objects
+fi
+# Clean the top-level Makefile's GRPC-specific compile lines too
+if [ -f "Makefile" ]; then
+  "${SED_INPLACE[@]}" "/grpc.*\.lo:/ {N; s|-I${OPENSSL_PREFIX}/include||g; s|-I${INSTALL_DIR}/include||g;}" Makefile
 fi
 
 write_compile
@@ -1384,7 +1426,7 @@ echo "display_startup_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "recursionguard.enabled=0 ;disabled due to minor performance impact, only enable this if you need it for debugging" >> "$INSTALL_DIR/bin/php.ini"
 
 # Load shared modules we built
-echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"
+# echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"  # Temporarily disabled - OpenSSL not built
 echo "extension=grpc.so"    >> "$INSTALL_DIR/bin/php.ini"
 
 if [ "$HAVE_OPCACHE" == "yes" ]; then
