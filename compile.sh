@@ -327,7 +327,7 @@ if [ $? -eq 0 ]; then
 	wget_flags=""
 	if [ "$DOWNLOAD_INSECURE" == "yes" ]; then
 		wget_flags="--no-check-certificate"
-	fi>
+	fi
 	alias _download_file="wget $wget_flags -nv -O -"
 else
 	type curl >> "$DIR/install.log" 2>&1
