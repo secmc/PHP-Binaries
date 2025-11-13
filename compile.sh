@@ -579,30 +579,11 @@ mkdir -m 0755 -p "$LIB_BUILD_DIR" >> "$DIR/install.log" 2>&1
 cd "$BUILD_DIR"
 set -e
 
-# ========================================================================
-# OPENSSL vs BORINGSSL ISOLATION STRATEGY
-# ========================================================================
-# Problem: gRPC bundles BoringSSL, which has headers that conflict with OpenSSL
-# Solution: Complete isolation - OpenSSL is INVISIBLE by default
-#
-# How it works:
-# 1. Build OpenSSL to isolated prefix: $OPENSSL_PREFIX (both headers AND libs)
-# 2. NEVER add OpenSSL to global PKG_CONFIG_PATH, CPPFLAGS, or LDFLAGS
-# 3. Only expose OpenSSL explicitly to libraries that need it:
-#    - curl: gets explicit -I and -L flags + local PKG_CONFIG_PATH
-#    - libzip: gets explicit CMAKE_PREFIX_PATH + local PKG_CONFIG_PATH  
-#    - PHP openssl ext: gets explicit --with-openssl=$OPENSSL_PREFIX
-#    - crypto ext: uses OpenSSL via PHP's config
-# 4. gRPC sees NOTHING - no OpenSSL headers, no libs, clean environment
-# 5. After OpenSSL build, symlink libs (not headers!) to main lib dir for runtime
-# 6. Post-configure: strip any leaked OpenSSL paths from gRPC Makefiles via sed
-#
-# Result: gRPC uses bundled BoringSSL, everything else uses real OpenSSL, zero conflicts
-# ========================================================================
+# ==== CHANGE A: Isolate OpenSSL headers to their own prefix ====
 OPENSSL_PREFIX="$INSTALL_DIR/openssl"
 mkdir -p "$OPENSSL_PREFIX"
-mkdir -p "$OPENSSL_PREFIX/lib"
-mkdir -p "$OPENSSL_PREFIX/lib/pkgconfig"
+# Also let pkg-config see OpenSSL's .pc if any, and make it resolve to our runtime lib dir:
+export PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig"
 
 #PHP
 write_library "PHP" "$PHP_VERSION"
@@ -704,42 +685,29 @@ function build_openssl {
 		write_download
 		download_github_src "openssl/openssl" "openssl-$OPENSSL_VERSION" "openssl" | tar -zx >> "$DIR/install.log" 2>&1
 
-	write_configure
-	cd "$openssl_dir"
-	# Build OpenSSL completely isolated - both headers AND libs in OPENSSL_PREFIX
-	# This prevents any accidental leakage to gRPC
-	RANLIB=$RANLIB $OPENSSL_CMD \
-	--prefix="$OPENSSL_PREFIX" \
-	--openssldir="$OPENSSL_PREFIX" \
-	--libdir="$OPENSSL_PREFIX/lib" \
-	no-asm \
-	no-hw \
-	no-engine \
-	$EXTRA_FLAGS >> "$DIR/install.log" 2>&1
+		write_configure
+		cd "$openssl_dir"
+		# ==== CHANGE A (continued): headers under $OPENSSL_PREFIX, libs under $INSTALL_DIR/lib ====
+		RANLIB=$RANLIB $OPENSSL_CMD \
+		--prefix="$OPENSSL_PREFIX" \
+		--openssldir="$OPENSSL_PREFIX" \
+		--libdir="$INSTALL_DIR/lib" \
+		no-asm \
+		no-hw \
+		no-engine \
+		$EXTRA_FLAGS >> "$DIR/install.log" 2>&1
 
-	write_compile
-	make -j $THREADS >> "$DIR/install.log" 2>&1 && mark_cache
-else
-	write_caching
-	cd "$openssl_dir"
-fi
-write_install
-make install_sw >> "$DIR/install.log" 2>&1
-# Copy libs/pkgconfig into isolated prefix (OpenSSL installer still drops them into $INSTALL_DIR/lib)
-for libpattern in libssl.* libcrypto.*; do
-	for src in "$INSTALL_DIR/lib"/$libpattern; do
-		if [ -f "$src" ] || [ -L "$src" ]; then
-			cp -P "$src" "$OPENSSL_PREFIX/lib/" >> "$DIR/install.log" 2>&1
-			ln -sf "$OPENSSL_PREFIX/lib/$(basename "$src")" "$INSTALL_DIR/lib/$(basename "$src")" >> "$DIR/install.log" 2>&1
-		fi
-	done
-done
-for pcfile in "$INSTALL_DIR/lib/pkgconfig"/openssl*.pc "$INSTALL_DIR/lib/pkgconfig"/libcrypto.pc "$INSTALL_DIR/lib/pkgconfig"/libssl.pc; do
-	if [ -f "$pcfile" ]; then
-		cp "$pcfile" "$OPENSSL_PREFIX/lib/pkgconfig/" >> "$DIR/install.log" 2>&1
+		write_compile
+		make -j $THREADS >> "$DIR/install.log" 2>&1 && mark_cache
+	else
+		write_caching
+		cd "$openssl_dir"
 	fi
-done
-cd ..
+	write_install
+	make install_sw >> "$DIR/install.log" 2>&1
+	# Keep pkg-config -L happy if it points to $OPENSSL_PREFIX/lib:
+	ln -s "$INSTALL_DIR/lib" "$OPENSSL_PREFIX/lib" >> "$DIR/install.log" 2>&1 || true
+	cd ..
 	write_done
 }
 
@@ -762,12 +730,8 @@ function build_curl {
 			sed -i'.bak' 's/^CURL_CONVERT_INCLUDE_TO_ISYSTEM//' ./configure.ac
 		fi
 		./buildconf --force >> "$DIR/install.log" 2>&1
-		# Explicitly point curl to isolated OpenSSL - nowhere else can find it
-		RANLIB=$RANLIB \
-		LDFLAGS="$LDFLAGS -L${OPENSSL_PREFIX}/lib" \
-		CPPFLAGS="$CPPFLAGS -I${OPENSSL_PREFIX}/include" \
-		PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig" \
-		./configure --disable-dependency-tracking \
+		# ==== CHANGE B: point curl at isolated OpenSSL headers & runtime lib dir
+		RANLIB=$RANLIB LDFLAGS="$LDFLAGS -L${INSTALL_DIR}/lib" CPPFLAGS="$CPPFLAGS -I${OPENSSL_PREFIX}/include" ./configure --disable-dependency-tracking \
 		--enable-ipv6 \
 		--enable-optimize \
 		--enable-http \
@@ -1011,9 +975,7 @@ function build_libzip {
 		write_configure
 		cd "$libzip_dir"
 
-		# Explicitly point libzip to isolated OpenSSL
-		CMAKE_PREFIX_PATH="$INSTALL_DIR:$OPENSSL_PREFIX" \
-		PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig" \
+		# ==== CHANGE B: make libzip find isolated OpenSSL headers, but link to runtime libs in $INSTALL_DIR/lib
 		cmake . \
 			-DCMAKE_PREFIX_PATH="$INSTALL_DIR;$OPENSSL_PREFIX" \
 			-DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
@@ -1118,8 +1080,8 @@ cd "$LIB_BUILD_DIR"
 
 build_zlib
 build_gmp
-build_openssl
-build_curl
+# build_openssl  # Temporarily disabled
+# build_curl     # Depends on OpenSSL - temporarily disabled
 build_yaml
 build_leveldb
 if [ "$COMPILE_GD" == "yes" ]; then
@@ -1133,7 +1095,7 @@ else
 fi
 
 build_libxml2
-build_libzip
+# build_libzip  # Depends on OpenSSL - temporarily disabled
 build_sqlite3
 build_libdeflate
 
@@ -1174,13 +1136,13 @@ get_github_extension "igbinary" "$EXT_IGBINARY_VERSION" "igbinary" "igbinary"
 get_pecl_extension "grpc" "$EXT_GRPC_VERSION"
 get_github_extension "recursionguard" "$EXT_RECURSIONGUARD_VERSION" "pmmp" "ext-recursionguard"
 
-echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
-git clone https://github.com/bukka/php-crypto.git "$BUILD_DIR/php/ext/crypto" >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR/php/ext/crypto"
-git checkout "$EXT_CRYPTO_VERSION" >> "$DIR/install.log" 2>&1
-git submodule update --init --recursive >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR/php"
-write_done
+# echo -n "  crypto: downloading $EXT_CRYPTO_VERSION..."
+# git clone https://github.com/bukka/php-crypto.git "$BUILD_DIR/php/ext/crypto" >> "$DIR/install.log" 2>&1
+# cd "$BUILD_DIR/php/ext/crypto"
+# git checkout "$EXT_CRYPTO_VERSION" >> "$DIR/install.log" 2>&1
+# git submodule update --init --recursive >> "$DIR/install.log" 2>&1
+# cd "$BUILD_DIR"
+# write_done
 
 get_github_extension "leveldb" "$EXT_LEVELDB_VERSION" "pmmp" "php-leveldb"
 get_github_extension "libdeflate" "$EXT_LIBDEFLATE_VERSION" "pmmp" "ext-libdeflate"
@@ -1269,25 +1231,16 @@ fi
 # v11 fix: keep existing flags (with -mmacosx-version-min) — do NOT unset here
 
 # Fix for newer clang: use gnu11 instead of c11 to allow asm keyword and other GNU extensions
-# Explicitly provide isolated OpenSSL to PHP configure
-RANLIB=$RANLIB \
-CFLAGS="$CFLAGS $FLAGS_LTO -std=gnu11" \
-CXXFLAGS="$CXXFLAGS $FLAGS_LTO" \
-LDFLAGS="$LDFLAGS $FLAGS_LTO" \
-CPPFLAGS="$CPPFLAGS" \
-OPENSSL_CFLAGS="-I${OPENSSL_PREFIX}/include" \
-OPENSSL_LIBS="-L${OPENSSL_PREFIX}/lib -lssl -lcrypto" \
-PKG_CONFIG_PATH="$INSTALL_DIR/lib/pkgconfig:$OPENSSL_PREFIX/lib/pkgconfig" \
-./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
+RANLIB=$RANLIB CFLAGS="$CFLAGS $FLAGS_LTO -std=gnu11" CXXFLAGS="$CXXFLAGS $FLAGS_LTO" LDFLAGS="$LDFLAGS $FLAGS_LTO" ./configure $PHP_OPTIMIZATION --prefix="$INSTALL_DIR" \
    --exec-prefix="$INSTALL_DIR" \
 --exec-prefix="$INSTALL_DIR" \
---with-curl \
+--without-curl \
 --with-zlib \
 --with-zlib \
 --with-gmp \
 --with-yaml \
 --without-openssl \
---with-zip \
+--without-zip \
 --with-libdeflate \
 $HAS_LIBJPEG \
 $HAS_GD \
@@ -1346,57 +1299,6 @@ else
   SED_INPLACE=(sed -i);
 fi
 
-# Remove global leakage of OpenSSL headers so only specific extensions see them
-if [ -f "Makefile" ]; then
-  "${SED_INPLACE[@]}" "s|-I$OPENSSL_PREFIX/include||g" Makefile
-fi
-if [ -f "Makefile.global" ]; then
-  "${SED_INPLACE[@]}" "s|-I$OPENSSL_PREFIX/include||g" Makefile.global
-fi
-
-# Re-add OpenSSL include path explicitly to extensions that need it
-if [ -f "ext/openssl/Makefile" ] && ! grep -q "$OPENSSL_PREFIX/include" ext/openssl/Makefile; then
-  "${SED_INPLACE[@]}" "s|^INCLUDES[[:space:]]*=|INCLUDES = -I$OPENSSL_PREFIX/include |" ext/openssl/Makefile
-fi
-if [ -f "ext/openssl/Makefile.objects" ] && ! grep -q "$OPENSSL_PREFIX/include" ext/openssl/Makefile.objects; then
-  "${SED_INPLACE[@]}" "s|^INCLUDES[[:space:]]*=|INCLUDES = -I$OPENSSL_PREFIX/include |" ext/openssl/Makefile.objects
-fi
-if [ -f "ext/crypto/Makefile" ] && ! grep -q "$OPENSSL_PREFIX/include" ext/crypto/Makefile; then
-  "${SED_INPLACE[@]}" "s|^INCLUDES[[:space:]]*=|INCLUDES = -I$OPENSSL_PREFIX/include |" ext/crypto/Makefile
-fi
-if [ -f "ext/crypto/Makefile.objects" ] && ! grep -q "$OPENSSL_PREFIX/include" ext/crypto/Makefile.objects; then
-  "${SED_INPLACE[@]}" "s|^INCLUDES[[:space:]]*=|INCLUDES = -I$OPENSSL_PREFIX/include |" ext/crypto/Makefile.objects
-fi
-
-# As a robust fallback, append include flags so they apply even if INCLUDES pattern changes
-if [ -f "ext/openssl/Makefile" ]; then
-  printf "\nINCLUDES := -I%s/include \$(INCLUDES)\nCPPFLAGS += -I%s/include\n" "$OPENSSL_PREFIX" "$OPENSSL_PREFIX" >> ext/openssl/Makefile
-fi
-if [ -f "ext/openssl/Makefile.objects" ]; then
-  printf "\nINCLUDES := -I%s/include \$(INCLUDES)\nCPPFLAGS += -I%s/include\n" "$OPENSSL_PREFIX" "$OPENSSL_PREFIX" >> ext/openssl/Makefile.objects
-fi
-if [ -f "ext/crypto/Makefile" ]; then
-  printf "\nINCLUDES := -I%s/include \$(INCLUDES)\nCPPFLAGS += -I%s/include\n" "$OPENSSL_PREFIX" "$OPENSSL_PREFIX" >> ext/crypto/Makefile
-fi
-if [ -f "ext/crypto/Makefile.objects" ]; then
-  printf "\nINCLUDES := -I%s/include \$(INCLUDES)\nCPPFLAGS += -I%s/include\n" "$OPENSSL_PREFIX" "$OPENSSL_PREFIX" >> ext/crypto/Makefile.objects
-fi
-
-# Ensure OpenSSL extension does not see gRPC's BoringSSL headers
-GRPC_BSSL_INCLUDE_PATH="$(pwd)/ext/grpc/third_party/boringssl-with-bazel/src/include"
-if [ -f "ext/openssl/Makefile" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" ext/openssl/Makefile
-fi
-if [ -f "ext/openssl/Makefile.objects" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" ext/openssl/Makefile.objects
-fi
-if [ -f "ext/crypto/Makefile" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" ext/crypto/Makefile
-fi
-if [ -f "ext/crypto/Makefile.objects" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" ext/crypto/Makefile.objects
-fi
-
 # Force GNU C standard for PHP core build (clang 16+ needs asm under gnu11)
 if [ -f "Makefile" ]; then
   "${SED_INPLACE[@]}" 's/-std=c11/-std=gnu11/g' Makefile
@@ -1413,16 +1315,18 @@ fi
 
 # Strip any OpenSSL link flags sneaking into gRPC
 if [ -f "ext/grpc/Makefile" ]; then
-  # strip link-time OpenSSL libs and any include/lib dirs pointing at our isolated OpenSSL
+  # strip link-time OpenSSL, and any include dirs pointing at our OpenSSL headers
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile
-  "${SED_INPLACE[@]}" -E "s|-L$OPENSSL_PREFIX/lib||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include/?||g" ext/grpc/Makefile
   "${SED_INPLACE[@]}" -E "s|-I$OPENSSL_PREFIX/include/?||g" ext/grpc/Makefile
 fi
 if [ -f "ext/grpc/Makefile.objects" ]; then
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lssl([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E 's/(^|[[:space:]])-lcrypto([[:space:]]|$)/ /g' ext/grpc/Makefile.objects
-  "${SED_INPLACE[@]}" -E "s|-L$OPENSSL_PREFIX/lib||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E "s|-L$INSTALL_DIR/lib||g" ext/grpc/Makefile.objects
+  "${SED_INPLACE[@]}" -E "s|-I$INSTALL_DIR/include/?||g" ext/grpc/Makefile.objects
   "${SED_INPLACE[@]}" -E "s|-I$OPENSSL_PREFIX/include/?||g" ext/grpc/Makefile.objects
 fi
 
@@ -1453,41 +1357,6 @@ if [ -f "Makefile" ]; then
   "${SED_INPLACE[@]}" "/grpc.*\.lo:/ {N; s|-I${OPENSSL_PREFIX}/include||g; s|-I${INSTALL_DIR}/include||g;}" Makefile
 fi
 
-# Remove BoringSSL include path from global INCLUDES so it doesn't leak into other extensions
-GRPC_BSSL_INCLUDE_PATH="$(pwd)/ext/grpc/third_party/boringssl-with-bazel/src/include"
-if [ -f "Makefile" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" Makefile
-fi
-if [ -f "Makefile.global" ]; then
-  "${SED_INPLACE[@]}" "s|-I$GRPC_BSSL_INCLUDE_PATH||g" Makefile.global
-fi
-
-# Re-add BoringSSL headers only for gRPC build to satisfy includes like <openssl/crypto.h>
-# Also add a resilient include path fallback via symlink into ext/grpc/include
-if [ -d "ext/grpc/third_party/boringssl-with-bazel/src/include/openssl" ]; then
-  mkdir -p ext/grpc/include >> "$DIR/install.log" 2>&1 || true
-  rm -rf ext/grpc/include/openssl >> "$DIR/install.log" 2>&1 || true
-  ln -s "$GRPC_BSSL_INCLUDE_PATH/openssl" ext/grpc/include/openssl >> "$DIR/install.log" 2>&1 || true
-fi
-if [ -f "ext/grpc/Makefile" ] && ! grep -q "$GRPC_BSSL_INCLUDE_PATH" ext/grpc/Makefile; then
-  {
-    echo ""
-    echo "# Ensure BoringSSL include path is used by gRPC only"
-    echo "INCLUDES := -I$GRPC_BSSL_INCLUDE_PATH \$(INCLUDES)"
-    echo "CPPFLAGS += -I$GRPC_BSSL_INCLUDE_PATH"
-    echo "CXXFLAGS += -I$GRPC_BSSL_INCLUDE_PATH"
-  } >> ext/grpc/Makefile
-fi
-if [ -f "ext/grpc/Makefile.objects" ] && ! grep -q "$GRPC_BSSL_INCLUDE_PATH" ext/grpc/Makefile.objects; then
-  {
-    echo ""
-    echo "# Ensure BoringSSL include path is used by gRPC only"
-    echo "INCLUDES := -I$GRPC_BSSL_INCLUDE_PATH \$(INCLUDES)"
-    echo "CPPFLAGS += -I$GRPC_BSSL_INCLUDE_PATH"
-    echo "CXXFLAGS += -I$GRPC_BSSL_INCLUDE_PATH"
-  } >> ext/grpc/Makefile.objects
-fi
-
 write_compile
 if [ "$COMPILE_FOR_ANDROID" == "yes" ]; then
 	sed -i=".backup" 's/-export-dynamic/-all-static/g' Makefile
@@ -1502,37 +1371,6 @@ fi
 make -j $THREADS >> "$DIR/install.log" 2>&1
 write_install
 make install >> "$DIR/install.log" 2>&1
-
-# Build OpenSSL and Crypto extensions out-of-tree with phpize to avoid gRPC include leakage
-write_out "PHP" "Building OpenSSL extension via phpize"
-cd "$BUILD_DIR/php/ext/openssl"
-write_configure
-"$INSTALL_DIR/bin/phpize" --clean >> "$DIR/install.log" 2>&1 || true
-[ -f "config0.m4" ] && cp -f "config0.m4" "config.m4" >> "$DIR/install.log" 2>&1 || true
-"$INSTALL_DIR/bin/phpize" >> "$DIR/install.log" 2>&1
-PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$INSTALL_DIR/lib/pkgconfig" \
-CPPFLAGS="-I$OPENSSL_PREFIX/include" \
-LDFLAGS="-L$OPENSSL_PREFIX/lib $LDFLAGS" \
-./configure --with-php-config="$INSTALL_DIR/bin/php-config" --with-openssl="$OPENSSL_PREFIX" >> "$DIR/install.log" 2>&1
-write_compile
-make -j $THREADS >> "$DIR/install.log" 2>&1
-write_install
-make install >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR/php"
-
-write_out "PHP" "Building Crypto extension via phpize"
-cd "$BUILD_DIR/php/ext/crypto"
-write_configure
-"$INSTALL_DIR/bin/phpize" >> "$DIR/install.log" 2>&1
-PKG_CONFIG_PATH="$OPENSSL_PREFIX/lib/pkgconfig:$INSTALL_DIR/lib/pkgconfig" \
-CPPFLAGS="-I$OPENSSL_PREFIX/include" \
-LDFLAGS="-L$OPENSSL_PREFIX/lib $LDFLAGS" \
-./configure --with-php-config="$INSTALL_DIR/bin/php-config" >> "$DIR/install.log" 2>&1
-write_compile
-make -j $THREADS >> "$DIR/install.log" 2>&1
-write_install
-make install >> "$DIR/install.log" 2>&1
-cd "$BUILD_DIR/php"
 
 function relativize_macos_library_paths {
 	IFS=$'\n' OTOOL_OUTPUT=($(otool -L "$1"))
@@ -1588,8 +1426,7 @@ echo "display_startup_errors=1" >> "$INSTALL_DIR/bin/php.ini"
 echo "recursionguard.enabled=0 ;disabled due to minor performance impact, only enable this if you need it for debugging" >> "$INSTALL_DIR/bin/php.ini"
 
 # Load shared modules we built
-echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"
-echo "extension=crypto.so"   >> "$INSTALL_DIR/bin/php.ini"
+# echo "extension=openssl.so" >> "$INSTALL_DIR/bin/php.ini"  # Temporarily disabled - OpenSSL not built
 echo "extension=grpc.so"    >> "$INSTALL_DIR/bin/php.ini"
 
 if [ "$HAVE_OPCACHE" == "yes" ]; then
@@ -1620,10 +1457,6 @@ if [[ "$COMPILE_TARGET" == "mac-"* ]]; then
 fi
 
 write_done
-
-# Ensure CLI finds php.ini by default (PHP expects it under $prefix/lib/php.ini)
-mkdir -p "$INSTALL_DIR/lib" >> "$DIR/install.log" 2>&1
-cp -f "$INSTALL_DIR/bin/php.ini" "$INSTALL_DIR/lib/php.ini" >> "$DIR/install.log" 2>&1
 
 if [[ "$HAVE_XDEBUG" == "yes" ]]; then
 	get_github_extension "xdebug" "$EXT_XDEBUG_VERSION" "xdebug" "xdebug"
